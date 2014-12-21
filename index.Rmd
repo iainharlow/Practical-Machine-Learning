@@ -1,0 +1,120 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Iain Harlow"
+date: 
+output:
+    html_document:
+    keep_md: yes
+pdf_document: default
+---
+    
+
+### Synopsis
+
+Tree-driven predictions of correct and incorrect barbell lifting, based on 52 continuously measured variables, with classifiers selected by boosting with the gbm algorithm. The approach yields a within-sample accuracy of `r sprintf("%1.1f%%",in_acc)` and an estimated out-of-sample (cross-validated) accuracy of `r sprintf("%1.1f%%",out_acc)`.
+
+### Approach
+
+Examining the test data, training data, and the [associated publication](http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf) provides some insight into appropriate model construction and feature selection. Classification into 5 separate options, with a large number of weak predictors, suggests a boosted tree-based algorithm or a random forest may be an appropriate approach. Here we use the caret package to select from 9 boosted tree-based models based on their out-of-sample classification accuracy.
+
+### Data Processsing
+
+Set the workspace and random seed, load the data:
+
+```{r, cache=TRUE}
+setwd("C:/Users/Iain/Desktop/R")
+set.seed(26169)
+rm(list = setdiff(ls(),c("trainraw","testraw")))
+
+# Load up some useful libraries:
+suppressWarnings(suppressMessages(library(adabag))) # For boosting 
+suppressWarnings(suppressMessages(library(gbm))) # For boosting 
+suppressWarnings(suppressMessages(library(randomForest))) # For boosting 
+suppressWarnings(suppressMessages(library(nnet))) # Neural Network Models
+suppressWarnings(suppressMessages(library(plyr))) # Working with tidy data
+suppressWarnings(suppressMessages(library(dplyr))) # Working with tidy data
+suppressWarnings(suppressMessages(library(reshape2))) # Reshaping tables
+suppressWarnings(suppressMessages(library(stringr))) # For manipulating strings
+
+if (!exists("trainraw")){
+    print("Reading in data... just a moment")
+    trainraw <- read.csv("pml-training.csv",stringsAsFactors=FALSE)
+    print("Finished reading data.")
+}
+
+if (!exists("testraw")){
+    print("Reading in data... just a moment")
+    testraw <- read.csv("pml-testing.csv",stringsAsFactors=FALSE)
+    print("Finished reading data.")
+}
+```
+
+Extract relevant variables to use as predictors. Excluding any variables with NAs in the test set (these tend to be interval summaries of the raw data) and omitting non-numeric and obviously unrelated variables such as timestamps (which may be artificially correlated with the outcome) yields 52 predictors: 4 locations (arm, belt, forearm and dumbbell) crossed with 13 measurements (accelerometer in x/y/z dimensions, gyroscope x/y/z, magnet x/y/z, pitch, roll, yaw and total acceleration).
+
+We also reserve 20% of the data for use in cross-validation, and z-transform each of the variables prior to model fitting:
+
+```{r, cache=TRUE}
+# Extract only the numeric columns, plus class
+train <- tbl_df(trainraw)
+n <- nrow(train)
+numtrain<-train[sapply(train, is.numeric)]
+numtrain$classe<-as.factor(train$classe)
+
+test <- tbl_df(testraw)
+n <- nrow(test)
+numtest<-test[sapply(test, is.numeric)]
+
+# Remove summary (unavailable) variables:
+summaryvars<-sapply(numtrain, function(x) sum(is.na(x)))
+numtrainsmall<-numtrain[,summaryvars==0]
+summaryvars<-sapply(numtest, function(x) sum(is.na(x)))
+numtestsmall<-numtest[,summaryvars==0]
+
+# Create CV set from 20% of the data, keeping class proportions similar across training and CV:
+inTrain <- createDataPartition(y=numtrainsmall$classe,p=0.8,list=FALSE)
+
+tr<-numtrainsmall[inTrain,]
+cv<-numtrainsmall[-inTrain,]
+tst<-numtestsmall
+
+# Drop irrelevant variables:
+tr<-tr[,5:57]
+cv<-cv[,5:57]
+tst<-tst[,5:57]
+
+# Centre and scale the data:
+pre_sc <- preProcess(tr[,-53],method=c("center","scale"))
+tr[,-53] <- predict(pre_sc,tr[,-53])
+cv[,-53] <- predict(pre_sc,cv[,-53])
+tst[,-53] <- predict(pre_sc,tst[,-53])
+
+```
+
+### Model Fitting and Selection
+
+With the data prepared, we can now fit a predictive model. Since we're attempting to predict - not causally explain - the data, we will use a boosted tree-based approach via the gbm R function. This approach aims to maximise the predictive power of a large number of weak predictors. 
+
+The caret function 'train', when wrapped around gbm, will produce 9 boosted tree-based models using different global tuning parameters and select the most accurate classifier using held-back sample performance. This most accurate model is then applied to the full training set, as well as the cross-validation set, to provide in- and out-of-sample performance estimates:
+
+```{r, cache=TRUE}
+# Try boosting:
+ptm <- proc.time()
+modfit<-train(classe~.,method="gbm",data=tr,verbose=FALSE)
+in_acc <- 100*sum(predict(modfit,tr[,-53])==tr$classe)/length(tr$classe)
+out_acc <- 100*sum(predict(modfit,cv[,-53])==cv$classe)/length(cv$classe)
+proc.time() - ptm
+```
+
+The in-sample (training) classification accuracy is `r sprintf("%1.1f%%",in_acc)`, and the estimated out-of-sample (cross-validated) classification accuracy is `r sprintf("%1.1f%%",out_acc)`.
+
+### Test Case Prediction
+
+The 20 test cases can now be predicted using the model:
+
+```{r, cache=TRUE}
+answers <- as.character(predict(modfit,tst))
+probs <- predict(modfit,tst,type="prob")
+answers
+```
+
+These yield 100% accuracy on the small test set.
